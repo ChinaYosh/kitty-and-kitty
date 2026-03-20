@@ -1,4 +1,11 @@
 spring:
   application:
     name: server
-
+  profiles:
+    active: dev
+weapis:
+  api-key: ${api-key}
+  base-url: ${base-url}
+  chat-path: ${chat-path}
+  model: ${model}
+  temperature: ${temperature}
