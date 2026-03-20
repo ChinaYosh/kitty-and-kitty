@@ -5,6 +5,11 @@ on:
   pull_request:
     branches: [ master ]
 
+# 必须增加权限配置，否则机器人无法在 PR 下发表评论
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   review:
     runs-on: ubuntu-latest
@@ -19,10 +24,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: 安装兼容版Gemini依赖
-        run: pip install google-generativeai==0.5.2 PyGithub
+      - name: 安装依赖
+        run: pip install google-generativeai==0.7.2 PyGithub
 
-      - name: 运行Gemini代码审查（中文结果）
+      - name: 运行Gemini代码审查
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -31,61 +36,81 @@ jobs:
         run: |
           python - <<EOF
           import os
+          import glob
           import google.generativeai as genai
           from github import Github
           from github.Auth import Token
 
-          # 配置Gemini
-          genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-          
-          # 关键：使用最基础的gemini-pro模型（全网稳定可用）
-          model = genai.GenerativeModel("gemini-pro")
+          # 配置 Gemini
+          genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+          model = genai.GenerativeModel("gemini-1.5-flash-latest")
 
-          # GitHub认证
-          auth = Token(os.environ["GITHUB_TOKEN"])
-          g = Github(auth=auth)
-          repo = g.get_repo(os.environ["GITHUB_REPOSITORY"])
+          # GitHub 认证
+          gh_token = os.environ.get("GITHUB_TOKEN")
+          repo_name = os.environ.get("GITHUB_REPOSITORY")
+          pr_number_str = os.environ.get("GITHUB_PR_NUMBER", "").strip()
 
-          # 读取Java代码
+          g = Github(auth=Token(gh_token))
+          repo = g.get_repo(repo_name)
+
           changed_files = []
-          if os.environ["GITHUB_PR_NUMBER"] and os.environ["GITHUB_PR_NUMBER"].strip():
-              pr = repo.get_pull(int(os.environ["GITHUB_PR_NUMBER"]))
+          is_pr = bool(pr_number_str)
+
+          if is_pr:
+              # 如果是 PR，只读取变更的文件（省 Token，速度快）
+              pr = repo.get_pull(int(pr_number_str))
               for file in pr.get_files():
-                  changed_files.append(f"文件：{file.filename}\n代码变更：{file.patch}")
+                  # 建议同时审查 Java 和 XML(你的 pom.xml 经常出问题，顺便让它查查)
+                  if file.filename.endswith(".java") or file.filename.endswith(".xml"):
+                      changed_files.append(f"==== 文件：{file.filename} ====\n代码变更：\n{file.patch}")
           else:
-              import glob
+              # 如果是 Push，读取所有 Java 文件
               java_files = glob.glob("**/*.java", recursive=True)
               for file in java_files:
                   try:
                       with open(file, "r", encoding="utf-8") as f:
-                          content = f.read()
-                          changed_files.append(f"文件：{file}\n完整代码：{content}")
-                  except:
-                      changed_files.append(f"文件：{file}\n读取失败")
+                          changed_files.append(f"==== 文件：{file} ====\n完整代码：\n{f.read()}")
+                  except Exception as e:
+                      print(f"无法读取文件: {file}, 错误: {e}")
+
+          # 如果没有发现 Java 或 XML 代码变更，直接结束，不浪费 API
+          if not changed_files:
+              print("没有检测到需要审查的 Java/XML 代码变更，流程结束。")
+              exit(0)
+
+          code_content = "\n\n".join(changed_files)
 
           # 审查指令
-          prompt = """
-          你是Java后端工程师，审查以下代码：
-          1. 代码规范（命名、注释、格式）
-          2. 安全漏洞（空指针、SQL注入）
-          3. 性能优化建议
-          4. 逻辑错误
-          要求：中文分点，每个问题给修复示例。
+          prompt_instruction = """
+          你是资深Java后端工程师，严格审查以下代码：
+          1. 检查代码规范（命名、注释、格式）
+          2. 排查漏洞（空指针、SQL注入、权限问题）
+          3. 提性能优化建议
+          4. 指出逻辑错误
+          5. 检查 pom.xml 的依赖版本是否合理
+          6. 每个问题给修复示例，中文分点回答
+          """
           
-          代码：
-          {}
-          """.format("\n\n".join(changed_files))
+          # 【重要修复】：千万不能用 .format() 拼接代码，因为 Java 代码包含大括号 {}
+          # 必须使用字符串加号拼接，避免触发 Python 的 KeyError
+          full_prompt = prompt_instruction + "\n\n代码如下：\n" + code_content
 
-          # 调用Gemini（容错处理）
+          print("正在调用 Gemini API 进行代码审查...")
+          
           try:
-              response = model.generate_content(prompt)
-              review_result = response.text if response.text else "未检测到代码问题"
+              response = model.generate_content(full_prompt)
+              review_result = response.text if response.text else "未检测到代码问题，看起来很棒！"
+              
+              if is_pr:
+                  pr.create_issue_comment(f"### 🤖 Gemini 代码审查结果\n\n{review_result}")
+                  print("已成功在 PR 中发表审查评论！")
+              else:
+                  print("### 🤖 Gemini 代码审查结果\n")
+                  print(review_result)
           except Exception as e:
-              review_result = f"审查提示：{str(e)}\n建议：检查Gemini API密钥是否有效，或更换网络环境"
-
-          # 输出结果
-          if os.environ["GITHUB_PR_NUMBER"] and os.environ["GITHUB_PR_NUMBER"].strip():
-              pr.create_issue_comment(f"### 🤖 Gemini代码审查结果\n{review_result}")
-          else:
-              print("### 🤖 Gemini代码审查结果\n", review_result)
+              error_msg = f"调用 Gemini API 失败: {e}"
+              print(error_msg)
+              if is_pr:
+                  pr.create_issue_comment(f"### 🤖 代码审查异常\n{error_msg}")
+              exit(1)
           EOF
