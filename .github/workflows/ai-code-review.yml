@@ -5,6 +5,11 @@ on:
   pull_request:
     branches: [ master ]
 
+# 【重点修复1】增加写权限，否则机器人在 PR 里发评论会报 403 错误
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   review:
     runs-on: ubuntu-latest
@@ -19,10 +24,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: 安装稳定版Gemini依赖
+      - name: 安装依赖
         run: pip install google-generativeai==0.7.2 PyGithub
 
-      - name: 运行Gemini代码审查（中文结果）
+      - name: 运行Gemini代码审查
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -31,61 +36,81 @@ jobs:
         run: |
           python - <<EOF
           import os
-          # 关键：用稳定版包名，不是google.genai！
-          import google.generativeai as genai  
+          import glob
+          import google.generativeai as genai
           from github import Github
           from github.Auth import Token
 
-          # 配置Gemini API密钥（稳定版支持configure方法）
-          genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-          # 使用100%可用的模型
-          model = genai.GenerativeModel("gemini-1.5-flash-latest")
+          # 【重点修复2】修正模型名称，去掉 -latest，解决 404 找不到模型的问题
+          genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+          model = genai.GenerativeModel("gemini-1.5-flash")
 
-          # GitHub认证（新版方式，无警告）
-          auth = Token(os.environ["GITHUB_TOKEN"])
-          g = Github(auth=auth)
-          repo = g.get_repo(os.environ["GITHUB_REPOSITORY"])
+          # GitHub 认证
+          gh_token = os.environ.get("GITHUB_TOKEN")
+          repo_name = os.environ.get("GITHUB_REPOSITORY")
+          pr_number_str = os.environ.get("GITHUB_PR_NUMBER", "").strip()
 
-          # 读取Java代码（只审查.java文件）
+          g = Github(auth=Token(gh_token))
+          repo = g.get_repo(repo_name)
+
           changed_files = []
-          if os.environ["GITHUB_PR_NUMBER"] and os.environ["GITHUB_PR_NUMBER"].strip():
-              pr = repo.get_pull(int(os.environ["GITHUB_PR_NUMBER"]))
+          is_pr = bool(pr_number_str)
+
+          # 智能判断：如果是PR只查变动的文件，如果是Push查所有Java代码
+          if is_pr:
+              pr = repo.get_pull(int(pr_number_str))
               for file in pr.get_files():
-                  changed_files.append(f"文件：{file.filename}\n代码变更：{file.patch}")
+                  # 同时监听 java 和 xml（帮你检查 pom.xml 有没有写错依赖）
+                  if file.filename.endswith(".java") or file.filename.endswith(".xml"):
+                      changed_files.append(f"==== 文件：{file.filename} ====\n代码变更：\n{file.patch}")
           else:
-              import glob
               java_files = glob.glob("**/*.java", recursive=True)
               for file in java_files:
                   try:
                       with open(file, "r", encoding="utf-8") as f:
-                          content = f.read()
-                          changed_files.append(f"文件：{file}\n完整代码：{content}")
+                          changed_files.append(f"==== 文件：{file} ====\n完整代码：\n{f.read()}")
                   except Exception as e:
-                      changed_files.append(f"文件：{file}\n读取失败：{str(e)}")
+                      print(f"无法读取文件: {file}, 错误: {e}")
 
-          # 给Gemini的审查指令（明确、简洁）
-          prompt = """
-          你是资深Java后端工程师，仅审查以下内容：
-          1. 代码规范：命名（驼峰/下划线）、注释完整性、代码格式
-          2. 安全漏洞：空指针、SQL注入、权限校验缺失
-          3. 性能优化：循环/缓存/数据库查询建议
-          4. 逻辑错误：条件判断/返回值/资源释放问题
-          要求：每个问题配修复示例，中文分点回答，无多余内容。
+          # 如果没有改动 Java/XML 文件，直接退出，不浪费额度
+          if not changed_files:
+              print("没有检测到需要审查的 Java/XML 代码变更，流程正常结束。")
+              exit(0)
+
+          code_content = "\n\n".join(changed_files)
+
+          prompt_instruction = """
+          你是资深Java后端工程师，严格审查以下代码：
+          1. 检查代码规范（命名、注释、格式）
+          2. 排查漏洞（空指针、SQL注入、权限问题）
+          3. 提性能优化建议
+          4. 指出逻辑错误
+          5. 检查 pom.xml 的依赖版本是否合理
+          6. 每个问题给修复示例，中文分点回答
+          """
           
-          待审查代码：
-          {}
-          """.format("\n\n".join(changed_files))
+          # 【重点修复3】放弃使用 .format()，直接用加号拼接，防止 Java 里的 {} 导致脚本崩溃
+          full_prompt = prompt_instruction + "\n\n代码如下：\n" + code_content
 
-          # 调用Gemini生成结果（容错处理）
+          print("正在调用 Gemini API 进行代码审查，请稍候...")
+          
           try:
-              response = model.generate_content(prompt)
-              review_result = response.text if response.text else "未检测到代码问题"
+              response = model.generate_content(full_prompt)
+              review_result = response.text if response.text else "未检测到代码问题，看起来很棒！"
+              
+              if is_pr:
+                  # 在 PR 的评论区留言
+                  pr.create_issue_comment(f"### 🤖 Gemini 代码审查结果\n\n{review_result}")
+                  print("✅ 已成功在 PR 中发表审查评论！")
+              else:
+                  # 直接在控制台打印日志
+                  print("### 🤖 Gemini 代码审查结果\n")
+                  print(review_result)
+                  print("\n✅ 审查完成！")
           except Exception as e:
-              review_result = f"审查失败：{str(e)}"
-
-          # 输出结果到GitHub（PR评论/日志）
-          if os.environ["GITHUB_PR_NUMBER"] and os.environ["GITHUB_PR_NUMBER"].strip():
-              pr.create_issue_comment(f"### 🤖 Gemini代码审查结果\n{review_result}")
-          else:
-              print("### 🤖 Gemini代码审查结果\n", review_result)
+              error_msg = f"调用 API 审查失败: {e}"
+              print("❌", error_msg)
+              if is_pr:
+                  pr.create_issue_comment(f"### 🤖 代码审查发生异常\n{error_msg}")
+              exit(1)
           EOF
