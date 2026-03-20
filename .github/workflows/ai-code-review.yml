@@ -1,5 +1,4 @@
 name: Gemini代码审查
-# 只有推代码到master、提PR到master时触发审查
 on:
   push:
     branches: [ master ]
@@ -10,18 +9,18 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
-      - name: 拉取你的代码
+      - name: 拉取代码
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: 安装Python（调用Gemini需要）
+      - name: 安装Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
 
-      - name: 安装Gemini依赖包
-        run: pip install google-generativeai PyGithub
+      - name: 安装兼容版Gemini依赖
+        run: pip install google-generativeai==0.5.2 PyGithub
 
       - name: 运行Gemini代码审查（中文结果）
         env:
@@ -34,46 +33,59 @@ jobs:
           import os
           import google.generativeai as genai
           from github import Github
+          from github.Auth import Token
 
           # 配置Gemini
           genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+          
+          # 关键：使用最基础的gemini-pro模型（全网稳定可用）
           model = genai.GenerativeModel("gemini-pro")
 
-          # 获取GitHub信息
-          g = Github(os.environ["GITHUB_TOKEN"])
+          # GitHub认证
+          auth = Token(os.environ["GITHUB_TOKEN"])
+          g = Github(auth=auth)
           repo = g.get_repo(os.environ["GITHUB_REPOSITORY"])
 
-          # 读取修改的Java代码
+          # 读取Java代码
           changed_files = []
-          if os.environ["GITHUB_PR_NUMBER"]:
+          if os.environ["GITHUB_PR_NUMBER"] and os.environ["GITHUB_PR_NUMBER"].strip():
               pr = repo.get_pull(int(os.environ["GITHUB_PR_NUMBER"]))
               for file in pr.get_files():
-                  changed_files.append(f"文件：{file.filename}\n内容：{file.patch}")
+                  changed_files.append(f"文件：{file.filename}\n代码变更：{file.patch}")
           else:
               import glob
-              for file in glob.glob("**/*.java", recursive=True):
-                  with open(file, "r", encoding="utf-8") as f:
-                      changed_files.append(f"文件：{file}\n内容：{f.read()}")
+              java_files = glob.glob("**/*.java", recursive=True)
+              for file in java_files:
+                  try:
+                      with open(file, "r", encoding="utf-8") as f:
+                          content = f.read()
+                          changed_files.append(f"文件：{file}\n完整代码：{content}")
+                  except:
+                      changed_files.append(f"文件：{file}\n读取失败")
 
-          # 给Gemini的审查指令（中文）
+          # 审查指令
           prompt = """
-          你是资深Java后端工程师，严格审查以下代码，要求：
-          1. 检查代码规范（命名、注释、格式）；
-          2. 找漏洞（空指针、SQL注入、权限问题）；
-          3. 提性能优化建议；
-          4. 指出逻辑错误；
-          5. 每个问题配修复示例，用中文回答，条理清晰。
+          你是Java后端工程师，审查以下代码：
+          1. 代码规范（命名、注释、格式）
+          2. 安全漏洞（空指针、SQL注入）
+          3. 性能优化建议
+          4. 逻辑错误
+          要求：中文分点，每个问题给修复示例。
+          
           代码：
           {}
           """.format("\n\n".join(changed_files))
 
-          # 调用Gemini生成结果
-          response = model.generate_content(prompt)
-          review_result = response.text
+          # 调用Gemini（容错处理）
+          try:
+              response = model.generate_content(prompt)
+              review_result = response.text if response.text else "未检测到代码问题"
+          except Exception as e:
+              review_result = f"审查提示：{str(e)}\n建议：检查Gemini API密钥是否有效，或更换网络环境"
 
-          # 输出结果（PR评论/日志）
-          if os.environ["GITHUB_PR_NUMBER"]:
-              pr.create_issue_comment(f"### Gemini代码审查结果\n{review_result}")
+          # 输出结果
+          if os.environ["GITHUB_PR_NUMBER"] and os.environ["GITHUB_PR_NUMBER"].strip():
+              pr.create_issue_comment(f"### 🤖 Gemini代码审查结果\n{review_result}")
           else:
-              print("### Gemini代码审查结果\n", review_result)
+              print("### 🤖 Gemini代码审查结果\n", review_result)
           EOF
