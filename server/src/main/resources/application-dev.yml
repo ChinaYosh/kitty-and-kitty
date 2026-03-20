@@ -1,0 +1,6 @@
+weapis:
+  api-key: sk-KdmuapLdUJoH0nuZyxoiAYgt3rfsfu0YKHVgiaUsW5urlOf1
+  base-url: https://vg.v1api.cc
+  chat-path: /v1/chat/completions
+  model: gpt-3.5-turbo
+  temperature: 0.7
