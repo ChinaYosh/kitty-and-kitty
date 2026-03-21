@@ -1,4 +1,4 @@
-package com.animals.common.Result;
+package com.animals.Result;
 
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -21,7 +21,7 @@ public class Result<T>
         return result;
     }
 
-    public static Result success(Object object)
+    public static Result success(T object)
     {
         Result result = new Result();
         result.data = object;
