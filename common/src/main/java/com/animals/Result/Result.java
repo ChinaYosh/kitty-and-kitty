@@ -21,7 +21,7 @@ public class Result<T>
         return result;
     }
 
-    public static Result success(T object)
+    public static <T> Result<T> success(T object)
     {
         Result result = new Result();
         result.data = object;
