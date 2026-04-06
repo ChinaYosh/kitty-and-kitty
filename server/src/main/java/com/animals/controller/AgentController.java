@@ -30,7 +30,7 @@ public class AgentController
     @Autowired
     private String weapisFullUrl;
 
-    @PostMapping("/talk")
+    @PostMapping("/chat")
     public Result talkWithAI(@RequestBody AIDOT aidot) {
         String msg = aidot.getMessage();
 
