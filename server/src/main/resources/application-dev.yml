@@ -4,3 +4,20 @@ weapis:
   chat-path: /v1/chat/completions
   model: gpt-3.5-turbo
   temperature: 0.7
+spring:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://47.99.125.14:33099/spring_AI?allowPublicKeyRetrieval=true&useSSL=false&serverTimezone=Asia/Shanghai&rewriteBatchedStatements=true
+    username: root
+    password: 147258369
+  ai:
+    openai:
+      base-url: https://dashscope.aliyuncs.com/compatible-mode
+      api-key: sk-209aec0950af4f21b7b901512f327f83
+  data:
+    redis:
+      host: 47.99.125.14
+      port: 4406
+      password: 123456
+      database: 1
+

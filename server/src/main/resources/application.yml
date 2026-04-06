@@ -1,11 +1,59 @@
 spring:
-  application:
+  applcation:
     name: server
   profiles:
     active: dev
+  data:
+    redis:
+      host: ${redis-host}
+      port: ${redis-port}
+      password: ${redis-password}
+      database: ${redis-database}
+  servlet:
+    multipart:
+        max-file-size: 20MB
+        max-request-size: 30MB
+  ai:
+    vectorstore:
+      redis:
+        initialize-schema: true
+        index-name: custom-index
+        prefix: custom-prefix
+    ollama:
+      base-url: http://localhost:11434
+      chat:
+        options:
+          model: gpt-oss:20b-cloud
+    openai:
+      base-url: ${base-url}
+      api-key: ${api-key}
+      chat:
+          options:
+            model: qwen-max
+      embedding:
+        options:
+          model: text-embedding-v3
+          dimensions: 1024
+
+  datasource:
+    driver-class-name: ${spring.datasource.driver-class-name}
+    url: ${spring.datasource.url}
+    username: ${spring.datasource.username}
+    password: ${spring.datasource.password}
+mybatis-plus:
+  mapper-locations: classpath*:com/animals/mapper/*.xml
+  type-aliases-package: com.animals.entity
+  configuration:
+    map-underscore-to-camel-case: true
+
 weapis:
   api-key: ${api-key}
   base-url: ${base-url}
   chat-path: ${chat-path}
   model: ${model}
   temperature: ${temperature}
+
+
+logging:
+  level:
+    root: info
